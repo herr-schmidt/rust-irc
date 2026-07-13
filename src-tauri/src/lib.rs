@@ -4,7 +4,7 @@ use tauri::AppHandle;
 use tokio::io::{self, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
-use regex::Regex;
+use regex::{Match, Regex};
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -36,51 +36,54 @@ async fn connect_to_network(network: &str, port: u32) -> TlsStream<TcpStream> {
     tls_stream
 }
 
+#[derive(Debug)]
 enum MessageType {
     RPLTopic = 332,
 }
 
+#[derive(Debug)]
 struct Message {
     message_type: MessageType,
-    description: String,
-    prefix: String,
-    command: String,
-    parameters: String,
-    trailing: String
+    description: Option<String>,
+    prefix: Option<String>,
+    command: Option<String>,
+    parameters: Option<String>,
+    trailing: Option<String>
 }
 
-fn parse_message(message: &str) -> String {
-    static SERVER_RESPONSE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^((:[^\ ]*))?(\ ([^\ :]+))(\ ([^\:]*))?(\ (:.*))?$").unwrap());
-    let clean_message = message.trim_matches(['\r', '\n']);
-    println!("{}", message);
-    println!("{}", clean_message);
-    
-    let parsed_message = match SERVER_RESPONSE_REGEX.captures(clean_message) {
-        None => String::from(format!("ERROR")).to_string(),
+fn extract_match(capture: Option<Match>) -> Option<String>{
+    let match_option = match capture {
+        None => None,
+        Some(_regex_match) => Some(capture.unwrap().as_str().to_string())
+    };
+    return match_option;
+}
+
+fn parse_message(message: &str) -> Message {
+    static SERVER_RESPONSE_REGEX: LazyLock<Regex> = LazyLock::new(|| {Regex::new(r"^((:[^\ ]*))?(\ ([^\ :]+))(\ ([^\:]*))?(\ (:.*))?$").unwrap()});
+    let parsed_message: Message = match SERVER_RESPONSE_REGEX.captures(message) {
+        None => Message {
+            message_type: MessageType::RPLTopic,
+            description: None,
+            prefix: None,
+            command: None,
+            parameters: None,
+            trailing: None,
+        },
         Some(captures) => {
+            let prefix = extract_match(captures.get(2));
+            let command = extract_match(captures.get(4));
+            let parameters = extract_match(captures.get(6));
+            let trailing = extract_match(captures.get(8));
             
-            let prefix_match = captures.get(2);
-            let prefix = match prefix_match {
-                None => String::from("ERROR").to_string(),
-                Some(_regex_match) => prefix_match.unwrap().as_str().to_string()
+            return Message {
+                message_type: MessageType::RPLTopic,
+                description: None,
+                prefix,
+                command,
+                parameters,
+                trailing,
             };
-            let command_match = captures.get(4);
-            let command = match command_match {
-                None => String::from("ERROR").to_string(),
-                Some(_regex_match) => command_match.unwrap().as_str().to_string()
-            };
-            let parameters_match = captures.get(6);
-            let parameters = match parameters_match {
-                None => String::from("ERROR").to_string(),
-                Some(_regex_match) => parameters_match.unwrap().as_str().to_string()
-            };
-            let trailing_match = captures.get(8);
-            let trailing = match trailing_match {
-                None => String::from("ERROR").to_string(),
-                Some(_regex_match) => trailing_match.unwrap().as_str().to_string()
-            };
-            
-            return String::from(format!("PREFIX: {}\nCOMMAND: {}\nPARAMETERS: {}\nTRAILING: {}", prefix, command, parameters, trailing)).to_string();
         }
     };
     
@@ -108,7 +111,7 @@ async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
     });
     
     loop {
-        let mut buffer = [0; 4096];
+        let mut buffer = [0; 1024];
         let bytes_read = read_tls_stream.read(&mut buffer).await?;
         
         if bytes_read == 0 {
@@ -135,8 +138,10 @@ async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
                 }
                 
                 for message in messages {
-                    println!("{}", message);
-                    println!("{}", parse_message(&String::from(message).to_string()));
+                    if !message.is_empty() {
+                        println!("{}", message);
+                        println!("{:?}", parse_message(&String::from(message).to_string()));
+                    }
                 }
             }
             Err(_) => {
