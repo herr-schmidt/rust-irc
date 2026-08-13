@@ -1,16 +1,34 @@
 use std::str::from_utf8;
-use std::sync::LazyLock;
-use tauri::AppHandle;
-use tokio::io::{self, split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use std::sync::{Arc, LazyLock};
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, WriteHalf, split};
 use tokio::net::TcpStream;
+use tokio::sync::MutexGuard;
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 use regex::{Match, Regex};
+use std::{collections::HashMap, sync::Mutex};
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct User {
     nickname: String,
     real_name: String,
+}
+
+struct ChannelData {
+    users: Vec<String>
+}
+
+struct HistoryState {
+    history: Mutex<Vec<String>>
+}
+
+struct ChannelsState {
+    channels_data: Mutex<HashMap<String, ChannelData>>
+}
+
+struct WriteTLSStreamState {
+    write_tls_stream: Arc<tokio::sync::Mutex<WriteHalf<TlsStream<TcpStream>>>>
 }
 
 #[tauri::command]
@@ -90,25 +108,38 @@ fn parse_message(message: &str) -> Message {
     return parsed_message
 }
 
+fn log_user_input(history_state: & State<HistoryState>, user_input_line: String) {
+    history_state.history.lock().unwrap().push(user_input_line);
+}
+
+#[tauri::command]
+async fn process_user_input_line(
+    history_state: State<'_, HistoryState>,  
+    write_tls_stream_state: State<'_, WriteTLSStreamState>, 
+    user_input_line: String
+) -> Result<(), String> {
+    
+    log_user_input(&history_state, user_input_line.clone());
+    send_command(write_tls_stream_state.write_tls_stream.lock().await, user_input_line).await;
+    
+    Ok(())
+}
+
+async fn send_command(mut write_tls_stream: MutexGuard<'_, WriteHalf<TlsStream<TcpStream>>>, command: String) {
+    let formatted_line = format!("{}\r\n", command); // message must end with CRLF as per IRC protocol
+    
+    write_tls_stream
+    .write_all(formatted_line.as_bytes())
+    .await
+    .expect("TODO: panic message");
+}
+
 async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
     let mut message_text_buffer = String::from("");
-    
     let tls_stream = connect_to_network("irc.libera.chat", 6697).await;
     let (mut read_tls_stream, mut write_tls_stream) = split(tls_stream);
     
-    tokio::spawn(async move {
-        let stdin = io::stdin();
-        let mut lines = BufReader::new(stdin).lines();
-        
-        while let Some(line) = lines.next_line().await.unwrap() {
-            let formatted_line = format!("{}\r\n", line); // message must end with CRLF as per IRC protocol
-            println!("{}", formatted_line);
-            write_tls_stream
-            .write_all(formatted_line.as_bytes())
-            .await
-            .expect("TODO: panic message");
-        }
-    });
+    app_handle.manage(WriteTLSStreamState { write_tls_stream: Arc::new(tokio::sync::Mutex::new(write_tls_stream))});
     
     loop {
         let mut buffer = [0; 1024];
@@ -141,6 +172,11 @@ async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
                     if !message.is_empty() {
                         println!("{}", message);
                         println!("{:?}", parse_message(&String::from(message).to_string()));
+                        
+                        app_handle.emit("new-users", [User {
+                            nickname: String::from("asd"),
+                            real_name: String::from("dds")
+                        }]).unwrap();
                     }
                 }
             }
@@ -160,6 +196,8 @@ pub fn run() {
     tauri::Builder::default()
     .setup(|app| {
         let app_handle = app.handle().clone();
+        app.manage(ChannelsState {channels_data: Default::default()});
+        app.manage(HistoryState { history: Default::default()});
         
         // this spawns a new OS thread
         std::thread::spawn(move || {
@@ -179,7 +217,7 @@ pub fn run() {
         Ok(())
     })
     .plugin(tauri_plugin_opener::init())
-    .invoke_handler(tauri::generate_handler![greet])
+    .invoke_handler(tauri::generate_handler![greet, process_user_input_line])
     .run(tauri::generate_context!())
     .expect("error while running tauri application");
 }
