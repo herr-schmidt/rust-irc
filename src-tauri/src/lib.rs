@@ -1,16 +1,17 @@
+mod b_to_f_commands;
 mod f_to_b_commands;
 mod parsing;
 mod structs;
 
+use crate::b_to_f_commands::update_users;
 use crate::f_to_b_commands::process_user_input_line;
-use crate::parsing::{extract_channel_users_vector, parse_message};
-use crate::structs::{ChannelsState, HistoryState, Message, User, WriteTLSStreamState};
+use crate::parsing::parse_message;
+use crate::structs::{ChannelsState, HistoryState, Message, MessageType, WriteTLSStreamState};
 use std::str::from_utf8;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 use tokio::io::{split, AsyncReadExt};
 use tokio::net::TcpStream;
-
 use tokio_native_tls::{native_tls, TlsConnector, TlsStream};
 
 async fn connect_to_network(network: &str, port: u32) -> TlsStream<TcpStream> {
@@ -25,12 +26,12 @@ async fn connect_to_network(network: &str, port: u32) -> TlsStream<TcpStream> {
     return tls_stream;
 }
 
-async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
+async fn start_irc_listener(application_handler: AppHandle) -> std::io::Result<()> {
     let mut message_text_buffer: String = String::from("");
     let tls_stream: TlsStream<TcpStream> = connect_to_network("irc.libera.chat", 6697).await;
     let (mut read_tls_stream, mut write_tls_stream) = split(tls_stream);
 
-    app_handle.manage(WriteTLSStreamState {
+    application_handler.manage(WriteTLSStreamState {
         write_tls_stream: Arc::new(tokio::sync::Mutex::new(write_tls_stream)),
     });
 
@@ -63,18 +64,19 @@ async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
 
                 for message in messages {
                     if !message.is_empty() {
-                        println!("{}", message);
-                        let message_struct: Message = parse_message(&String::from(message).to_string());
-                        extract_channel_users_vector(&message_struct);
-                        app_handle
-                            .emit(
-                                "new-users",
-                                [User {
-                                    nickname: String::from("asd"),
-                                    real_name: String::from("dds"),
-                                }],
-                            )
-                            .unwrap();
+                        let message_struct: Message =
+                            parse_message(&String::from(message).to_string());
+                        println!("{:?}", message_struct);
+
+                        if (message_struct.message_type.is_some()) {
+                            match message_struct.message_type {
+                                Some(MessageType::RPL_TOPIC) => {},
+                                Some(MessageType::RPL_NAMREPLY) => {
+                                    update_users(&application_handler, &message_struct);
+                                }
+                                None => {},
+                            };
+                        }
                     }
                 }
             }
@@ -93,7 +95,7 @@ async fn start_irc_listener(app_handle: AppHandle) -> std::io::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let app_handle = app.handle().clone();
+            let application_handler = app.handle().clone();
             app.manage(ChannelsState {
                 channels_data: Default::default(),
             });
@@ -104,13 +106,14 @@ pub fn run() {
             // this spawns a new OS thread
             std::thread::spawn(move || {
                 // need a tokio runtime here, since the start_irc_listener is async
-                let runtime: tokio::runtime::Runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .unwrap();
+                let runtime: tokio::runtime::Runtime =
+                    tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .unwrap();
 
                 runtime.block_on(async {
-                    if let Err(e) = start_irc_listener(app_handle).await {
+                    if let Err(e) = start_irc_listener(application_handler).await {
                         eprintln!("IRC listener encountered an error: {}", e);
                     }
                 });

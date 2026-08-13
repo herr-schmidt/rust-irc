@@ -18,15 +18,23 @@ fn extract_message_type(command: &Option<String>) -> Option<MessageType> {
     };
 }
 
-pub(crate) fn extract_channel_users_vector(message: &Message) {
+pub(crate) fn extract_channel_users_vector(message: &Message) -> Vec<User> {
+    let mut users: Vec<User> = vec![];
     match message.trailing.as_deref() {
         Some(trailing) => {
-            println!("TRAILING: {}", trailing)
+            trailing.split(" ").for_each(|nickname| {
+                users.push(User {
+                    nickname: String::from(nickname),
+                    real_name: None,
+                });
+            });
         }
         None => {
             println!("Nothing")
         }
     };
+
+    return users;
 }
 
 pub(crate) fn parse_message(message: &str) -> Message {

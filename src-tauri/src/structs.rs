@@ -34,9 +34,10 @@ pub(crate) struct WriteTLSStreamState {
 
 #[derive(serde::Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
+#[derive(Debug)]
 pub(crate) struct User {
     pub(crate) nickname: String,
-    pub(crate) real_name: String,
+    pub(crate) real_name: Option<String>,
 }
 
 pub(crate) struct ChannelData {

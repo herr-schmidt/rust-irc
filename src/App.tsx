@@ -39,10 +39,12 @@ function App() {
         <input
           className="flex w-full border border-gray-600 rounded-sm focus:outline-none p-1"
           type="text"
+          value={userInput}
           onChange={(event) => setUserInput(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
               invoke("process_user_input_line", { userInputLine: userInput });
+              setUserInput("");
             }
           }}
         ></input>
